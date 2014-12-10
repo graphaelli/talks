@@ -25,7 +25,7 @@ func getChunk(w io.WriterAt, url string, off, size int64, counts chan int, rp Re
 		return fmt.Errorf("bad content-range: %v", cr)      OMIT
 	}                                                       OMIT
 
-	_, err = io.Copy(&sectionWriter{w, off}, logReader{res.Body, counts})
+	_, err = io.Copy(&sectionWriter{w, off}, logReader{res.Body, counts})  // HL
 	res.Body.Close()
 	if err != nil {
 		return fmt.Errorf("copy error: %v", err)
