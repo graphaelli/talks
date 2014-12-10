@@ -1,0 +1,199 @@
+Code Review - dl.go
+An http client in Go
+9 Dec 2014
+Tags: notmyowncode
+
+Gil Raphaelli
+g@raphaelli.com
+
+* Andrew Gerrand's code
+
+.image eneff-tweet.png 229 597
+
+* Test Server
+
+.code server.go
+
+* Note about the next few slides
+
+The absolute numbers are irrelevant.
+
+* wget
+
+    HTTP request sent, awaiting response... 200 OK
+    Length: 460075235 (439M) [application/octet-stream]
+    Saving
+
+    100%[==============================================================================================>] 438.76M  2.47MB/s   in 3m 24s
+
+    2014-11-28 20:02:22 (2.15 MB/s) - saved [460075235/460075235]
+
+    real 3m23.855s
+    user 0m0.279s
+    sys  0m2.033s
+
+* curl
+
+    % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                   Dload  Upload   Total   Spent    Left  Speed
+                                   100  438M  100  438M    0     0  2062k      0  0:03:37  0:03:37 --:--:-- 1945k
+
+    real 3m37.889s
+    user 0m0.285s
+    sys  0m1.945s
+
+* dl (0 concurrency)
+
+    2014/11/28 21:09:11 4,921,272/460,075,235 bytes received (4.9MB/sec)
+    2014/11/28 21:09:12 8,199,104/460,075,235 bytes received (3.3MB/sec)
+    2014/11/28 21:09:13 11,611,256/460,075,235 bytes received (3.4MB/sec)
+    2014/11/28 21:09:14 14,815,936/460,075,235 bytes received (3.2MB/sec)
+    2014/11/28 21:09:15 19,445,216/460,075,235 bytes received (4.6MB/sec)
+    2014/11/28 21:09:16 20,690,596/460,075,235 bytes received (1.2MB/sec)
+    ...
+    2014/11/28 21:12:14 457,052,856/460,075,235 bytes received (2.1MB/sec)
+    2014/11/28 21:12:15 457,625,176/460,075,235 bytes received (572KB/sec)
+    2014/11/28 21:12:16 460,075,235 bytes received
+
+    real 3m6.007s
+    user 0m0.500s
+    sys  0m1.625s
+
+* dl
+
+    2014/11/28 19:58:48 101,095,112/460,075,235 bytes received (101MB/sec)
+    2014/11/28 19:58:49 206,398,824/460,075,235 bytes received (105MB/sec)
+    2014/11/28 19:58:50 312,513,752/460,075,235 bytes received (106MB/sec)
+    2014/11/28 19:58:51 421,657,712/460,075,235 bytes received (109MB/sec)
+    2014/11/28 19:58:52 459,281,632/460,075,235 bytes received (38MB/sec)
+    2014/11/28 19:58:53 460,075,235/460,075,235 bytes received (794KB/sec)
+    2014/11/28 19:58:53 460,075,235 bytes received
+
+    real 0m6.204s
+    user 0m0.634s
+    sys  0m1.556s
+
+* how
+
+**
+
+wget
+
+    2014/11/28 20:02:22 GET "/bigfile" "HTTP/1.1" Accept="*/*", Connection="Keep-Alive", User-Agent="Wget/1.16 (darwin13.4.0)"
+
+**
+
+curl
+
+    2014/11/28 20:07:33 GET "/bigfile" "HTTP/1.1" Accept="*/*", User-Agent="curl/7.30.0"
+
+**
+
+dl
+
+    2014/11/28 19:58:47 HEAD "/bigfile" "HTTP/1.1" User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=0-10485759", User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=10485760-20971519", User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=20971520-31457279", User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=31457280-41943039", User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=41943040-52428799", User-Agent="Go 1.1 package http"
+    2014/11/28 19:58:47 GET "/bigfile" "HTTP/1.1" Accept-Encoding="gzip", Range="bytes=52428800-62914559", User-Agent="Go 1.1 package http"
+
+* dl walkthrough
+
+.link https://github.com/nf/dl https://github.com/nf/dl
+
+- HEAD Request for size
+- GET Chunks and assemble them
+- Show progress as we go
+
+* dl pre-fetch code
+
+    rp := func(r *http.Request) {
+        if *username != "" || *password != "" {
+            r.SetBasicAuth(*username, *password)
+        }
+    }
+    size, state, err := fetch.Fetch(dest, source, rp)
+    if err != nil {
+        return err
+    }
+    if size == 0 {
+        return nil
+    }
+
+* some fetch code
+
+    func Fetch(dest, source string, rp RequestPreparer) (size int64, s <-chan State, err error)
+
+    type RequestPreparer func(*http.Request)
+
+    type State struct {
+        Count int64
+        Err   error
+    }
+
+* an aside - Type Identity
+
+Two types are either identical or different.
+
+consider:
+
+.play type-id1.go
+
+* Type Identity continued
+
+.play type-id2.go
+
+.link http://golang.org/ref/spec#Type_identity
+
+* back to dl
+
+    var (
+        lastState fetch.State
+        lastCount int64
+        ticker    = time.NewTicker(time.Second)
+    )
+    defer ticker.Stop()
+    for {
+        select {
+        case s, ok := <-state:
+            if !ok {
+                log.Printf("%v bytes received",
+                    humanize.Comma(lastState.Count))
+                return lastState.Err
+            }
+            lastState = s
+        case <-ticker.C:
+            log.Printf(
+                "%v/%v bytes received (%v/sec)",
+                humanize.Comma(lastState.Count),
+                humanize.Comma(size),
+                humanize.Bytes(uint64(lastState.Count-lastCount)),
+            )
+            lastCount = lastState.Count
+        }
+    }
+}
+
+* back to fetch - a HEAD request
+
+.code fetch-head.go
+
+* fetch - calculating offsets
+
+.code fetch-offsets.go
+
+* fetch - waitgroup
+
+.code fetch-waitgroup.go
+
+* fetch - range GET requests
+
+.code fetch-get-range.go
+
+* fetch - state updates
+
+.code fetch-update-state.go
+
+
